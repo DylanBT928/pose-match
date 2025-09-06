@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>PoseMatch</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      body {
+        margin: 0;
+        font: 15px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        background: #0b0b0b;
+        color: #e6e6e6;
+      }
+      header {
+        padding: 14px 18px;
+        border-bottom: 1px solid #1d1d1d;
+      }
+      main {
+        padding: 14px 18px;
+        display: grid;
+        gap: 16px;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 16px;
+      }
+      .panel {
+        background: #111;
+        border: 1px solid #1e1e1e;
+        border-radius: 12px;
+        padding: 12px;
+      }
+      .panel h3 {
+        margin: 0 0 8px;
+        font-weight: 600;
+      }
+      canvas {
+        width: 100%;
+        height: auto;
+        background: #141414;
+        border-radius: 8px;
+        display: block;
+      }
+      .row {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      button,
+      label.btn {
+        background: #222;
+        border: 1px solid #333;
+        color: #eee;
+        padding: 8px 12px;
+        border-radius: 8px;
+        cursor: pointer;
+      }
+      button:hover,
+      label.btn:hover {
+        background: #2a2a2a;
+      }
+      input[type="file"] {
+        display: none;
+      }
+      #status {
+        opacity: 0.9;
+      }
+      .muted {
+        color: #9aa0a6;
+      }
+      .ok {
+        color: #6bd36b;
+      }
+      .warn {
+        color: #f5c052;
+      }
+      .err {
+        color: #ff6b6b;
+      }
+      @media (max-width: 980px) {
+        .grid {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h2>Pose Game</h2>
+      <div class="muted">
+        Webcam is mirrored for display only; backend always sees un-mirrored
+        frames.
+      </div>
+    </header>
+
+    <main>
+      <div class="grid">
+        <section class="panel">
+          <h3>Live</h3>
+          <canvas id="live" width="960" height="540"></canvas>
+          <div class="row" style="margin-top: 8px">
+            <button id="openCam">Open camera</button>
+            <button id="setTarget">📸 Set target from webcam</button>
+            <label class="btn">
+              Upload target image…
+              <input id="upload" type="file" accept="image/*" />
+            </label>
+            <button id="clearTarget">🧹 Clear target</button>
+            <label class="row" style="margin-left: auto; gap: 6px">
+              <input type="checkbox" id="mirror" checked />
+              <span>Mirror webcam</span>
+            </label>
+          </div>
+          <div id="status" class="muted" style="margin-top: 6px">
+            Status: idle
+          </div>
+        </section>
+
+        <section class="panel">
+          <h3>Target</h3>
+          <canvas id="target" width="960" height="540"></canvas>
+          <div class="muted" style="margin-top: 6px">
+            Target is never mirrored (uploads and webcam snapshots are stored
+            un-mirrored).
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <script>
+      const API = "http://127.0.0.1:5000"; // Flask server
+
+      const live = document.getElementById("live");
+      const lctx = live.getContext("2d");
+      const target = document.getElementById("target");
+      const tctx = target.getContext("2d");
+
+      const openBtn = document.getElementById("openCam");
+      const setTargetBtn = document.getElementById("setTarget");
+      const clearBtn = document.getElementById("clearTarget");
+      const uploadInp = document.getElementById("upload");
+      const mirrorEl = document.getElementById("mirror");
+      const statusEl = document.getElementById("status");
+
+      // Hidden <video> and OFFSCREEN canvas (feed backend UN-MIRRORED frames)
+      const video = document.createElement("video");
+      video.playsInline = true;
+      video.muted = true;
+      video.autoplay = true;
+
+      const work = document.createElement("canvas");
+      work.width = live.width;
+      work.height = live.height;
+      const wctx = work.getContext("2d");
+
+      let lastKp = null; // [{x,y}...], coords in live canvas space
+      let frameCount = 0;
+      const sendEvery = 3; // throttle backend calls
+
+      // For uploaded target fit (so we can scale returned keypoints)
+      let lastTargetFit = null; // { sx, sy, ox, oy } // scaleX/Y & offset
+
+      // COCO pairs
+      const SKELETON = [
+        [5, 7],
+        [7, 9],
+        [6, 8],
+        [8, 10],
+        [11, 13],
+        [13, 15],
+        [12, 14],
+        [14, 16],
+        [5, 6],
+        [11, 12],
+        [5, 11],
+        [6, 12],
+      ];
+
+      function drawSkeleton(ctx, kp, color = "lime", radius = 3) {
+        if (!kp || !kp.length) return;
+        ctx.save();
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = color;
+        ctx.fillStyle = color;
+        // lines
+        for (const [i, j] of SKELETON) {
+          const a = kp[i],
+            b = kp[j];
+          if (!a || !b) continue;
+          if (
+            !Number.isFinite(a[0]) ||
+            !Number.isFinite(a[1]) ||
+            !Number.isFinite(b[0]) ||
+            !Number.isFinite(b[1])
+          )
+            continue;
+          ctx.beginPath();
+          ctx.moveTo(a[0], a[1]);
+          ctx.lineTo(b[0], b[1]);
+          ctx.stroke();
+        }
+        // points
+        for (const p of kp) {
+          if (!p) continue;
+          const [x, y] = p;
+          if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+          ctx.beginPath();
+          ctx.arc(x, y, radius, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.restore();
+      }
+
+      async function postFrame(url, blob, mirror = false) {
+        const fd = new FormData();
+        fd.append("frame", blob, "frame.jpg");
+        fd.append("mirror", String(mirror));
+        const resp = await fetch(url, { method: "POST", body: fd });
+        if (!resp.ok) throw new Error(resp.statusText);
+        return resp.json();
+      }
+
+      async function postImage(url, file) {
+        const fd = new FormData();
+        fd.append("image", file, file.name || "image.jpg");
+        const resp = await fetch(url, { method: "POST", body: fd });
+        if (!resp.ok) throw new Error(resp.statusText);
+        return resp.json();
+      }
+
+      // Draw an ImageBitmap to canvas preserving aspect, return fit params
+      function drawImageFit(ctx, img, canvas) {
+        const W = canvas.width,
+          H = canvas.height;
+        const iw = img.width,
+          ih = img.height;
+        ctx.clearRect(0, 0, W, H);
+        const s = Math.min(W / iw, H / ih);
+        const dw = iw * s,
+          dh = ih * s;
+        const ox = (W - dw) / 2;
+        const oy = (H - dh) / 2;
+        ctx.drawImage(img, ox, oy, dw, dh);
+        return { sx: s, sy: s, ox, oy };
+      }
+
+      // MAIN LOOP
+      async function loop() {
+        requestAnimationFrame(loop);
+        if (video.readyState < 2) return;
+
+        const W = live.width,
+          H = live.height;
+
+        // ---- DISPLAY ----
+        lctx.clearRect(0, 0, W, H);
+        lctx.save();
+        if (mirrorEl.checked) {
+          lctx.translate(W, 0);
+          lctx.scale(-1, 1);
+        }
+        lctx.drawImage(video, 0, 0, W, H);
+        drawSkeleton(lctx, lastKp, "lime");
+        lctx.restore();
+
+        // ---- BACKEND ----
+        frameCount++;
+        if (frameCount % sendEvery !== 0) return;
+
+        wctx.clearRect(0, 0, W, H);
+        wctx.drawImage(video, 0, 0, W, H);
+        work.toBlob(
+          async (blob) => {
+            try {
+              const data = await postFrame(`${API}/infer`, blob, false);
+              lastKp = data.keypoints || null;
+
+              const msg =
+                data.score == null
+                  ? data.keypoints
+                    ? "Tracking… set a target to start scoring."
+                    : "No person detected."
+                  : `Score: ${data.score.toFixed(1)}%`;
+              statusEl.textContent = "Status: " + msg;
+              statusEl.className = data.score != null ? "ok" : "muted";
+            } catch (e) {
+              statusEl.textContent = "Status: backend error";
+              statusEl.className = "err";
+            }
+          },
+          "image/jpeg",
+          0.7
+        );
+      }
+
+      // -------- UI handlers --------
+      openBtn.onclick = async () => {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({
+            video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+            audio: false,
+          });
+          video.srcObject = stream;
+          video.play();
+          requestAnimationFrame(loop);
+          statusEl.textContent = "Status: camera opened";
+          statusEl.className = "ok";
+        } catch (e) {
+          statusEl.textContent = "Status: failed to open camera";
+          statusEl.className = "err";
+        }
+      };
+
+      setTargetBtn.onclick = async () => {
+        wctx.clearRect(0, 0, work.width, work.height);
+        wctx.drawImage(video, 0, 0, work.width, work.height);
+        work.toBlob(
+          async (blob) => {
+            try {
+              const snap = await createImageBitmap(blob);
+              drawImageFit(tctx, snap, target);
+
+              const data = await postFrame(
+                `${API}/set_target_from_frame`,
+                blob,
+                false
+              );
+              if (data.ok && data.keypoints) {
+                const s = Math.min(
+                  target.width / work.width,
+                  target.height / work.height
+                );
+                const dw = work.width * s,
+                  dh = work.height * s;
+                const ox = (target.width - dw) / 2;
+                const oy = (target.height - dh) / 2;
+                const sk = data.keypoints.map(([x, y]) => [
+                  ox + x * s,
+                  oy + y * s,
+                ]);
+                drawSkeleton(tctx, sk, "yellow");
+                statusEl.textContent = "Status: Target set!";
+                statusEl.className = "ok";
+              } else {
+                statusEl.textContent =
+                  "Status: " + (data.message || "Failed to set target");
+                statusEl.className = "warn";
+              }
+            } catch (e) {
+              statusEl.textContent = "Status: error setting target";
+              statusEl.className = "err";
+            }
+          },
+          "image/jpeg",
+          0.8
+        );
+      };
+
+      clearBtn.onclick = async () => {
+        tctx.clearRect(0, 0, target.width, target.height);
+        try {
+          const r = await fetch(`${API}/clear_target`, { method: "POST" });
+          await r.json();
+        } catch {}
+        statusEl.textContent = "Status: Target cleared.";
+        statusEl.className = "muted";
+      };
+
+      uploadInp.onchange = async (e) => {
+        const file = e.target.files && e.target.files[0];
+        if (!file) return;
+
+        const img = await createImageBitmap(file);
+        lastTargetFit = drawImageFit(tctx, img, target);
+
+        try {
+          const data = await postImage(`${API}/set_target_from_upload`, file);
+          if (data.ok && data.keypoints) {
+            const { sx, sy, ox, oy } = lastTargetFit;
+            const sk = data.keypoints.map(([x, y]) => [
+              ox + x * sx,
+              oy + y * sy,
+            ]);
+            drawSkeleton(tctx, sk, "yellow");
+            statusEl.textContent = "Status: Target set from image!";
+            statusEl.className = "ok";
+          } else {
+            statusEl.textContent =
+              "Status: " + (data.message || "No person detected.");
+            statusEl.className = "warn";
+          }
+        } catch (err) {
+          statusEl.textContent = "Status: upload failed";
+          statusEl.className = "err";
+        } finally {
+          uploadInp.value = "";
+        }
+      };
+    </script>
+  </body>
+</html>
