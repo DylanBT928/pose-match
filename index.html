@@ -111,6 +111,10 @@
               <input id="upload" type="file" accept="image/*" />
             </label>
             <button id="clearTarget">🧹 Clear target</button>
+            <label class="row" style="gap: 6px">
+              <input type="checkbox" id="multiperson" />
+              <span>Multi-person mode</span>
+            </label>
             <label class="row" style="margin-left: auto; gap: 6px">
               <input type="checkbox" id="mirror" checked />
               <span>Mirror webcam</span>
@@ -145,6 +149,7 @@
       const clearBtn = document.getElementById("clearTarget");
       const uploadInp = document.getElementById("upload");
       const mirrorEl = document.getElementById("mirror");
+      const multipersonEl = document.getElementById("multiperson");
       const statusEl = document.getElementById("status");
 
       // Hidden <video> and OFFSCREEN canvas (feed backend UN-MIRRORED frames)
@@ -158,7 +163,8 @@
       work.height = live.height;
       const wctx = work.getContext("2d");
 
-      let lastKp = null; // [{x,y}...], coords in live canvas space
+      let lastKp = null; // [{x,y}...], coords in live canvas space (single person)
+      let lastAllKp = null; // [[[x,y}...], [[x,y]...], ...], coords for all people (multi-person)
       let frameCount = 0;
       const sendEvery = 3; // throttle backend calls
 
@@ -216,6 +222,29 @@
         ctx.restore();
       }
 
+      function drawMultipleSkeletons(ctx, allKp) {
+        if (!allKp || !allKp.length) return;
+
+        // Different colors for different people
+        const colors = [
+          "#00ff00", // lime
+          "#ff6b6b", // red
+          "#4ecdc4", // teal
+          "#45b7d1", // blue
+          "#96ceb4", // mint
+          "#feca57", // yellow
+          "#ff9ff3", // pink
+          "#a8e6cf", // light green
+          "#dda0dd", // plum
+          "#98d8c8", // mint blue
+        ];
+
+        allKp.forEach((personKp, index) => {
+          const color = colors[index % colors.length];
+          drawSkeleton(ctx, personKp, color, 3);
+        });
+      }
+
       async function postFrame(url, blob, mirror = false) {
         const fd = new FormData();
         fd.append("frame", blob, "frame.jpg");
@@ -265,7 +294,14 @@
           lctx.scale(-1, 1);
         }
         lctx.drawImage(video, 0, 0, W, H);
-        drawSkeleton(lctx, lastKp, "lime");
+
+        // Draw skeletons based on mode
+        if (multipersonEl.checked) {
+          drawMultipleSkeletons(lctx, lastAllKp);
+        } else {
+          drawSkeleton(lctx, lastKp, "lime");
+        }
+
         lctx.restore();
 
         // ---- BACKEND ----
@@ -277,17 +313,40 @@
         work.toBlob(
           async (blob) => {
             try {
-              const data = await postFrame(`${API}/infer`, blob, false);
-              lastKp = data.keypoints || null;
+              if (multipersonEl.checked) {
+                // Multi-person mode
+                const data = await postFrame(
+                  `${API}/infer_multiperson`,
+                  blob,
+                  false
+                );
+                lastAllKp = data.all_keypoints || null;
+                lastKp = null; // Clear single person data
 
-              const msg =
-                data.score == null
-                  ? data.keypoints
-                    ? "Tracking… set a target to start scoring."
-                    : "No person detected."
-                  : `Score: ${data.score.toFixed(1)}%`;
-              statusEl.textContent = "Status: " + msg;
-              statusEl.className = data.score != null ? "ok" : "muted";
+                const msg =
+                  data.all_keypoints && data.all_keypoints.length > 0
+                    ? `Tracking ${data.num_people} person(s). Multi-person mode active.`
+                    : "No people detected.";
+                statusEl.textContent = "Status: " + msg;
+                statusEl.className =
+                  data.all_keypoints && data.all_keypoints.length > 0
+                    ? "ok"
+                    : "muted";
+              } else {
+                // Single person mode (original behavior)
+                const data = await postFrame(`${API}/infer`, blob, false);
+                lastKp = data.keypoints || null;
+                lastAllKp = null; // Clear multi-person data
+
+                const msg =
+                  data.score == null
+                    ? data.keypoints
+                      ? "Tracking… set a target to start scoring."
+                      : "No person detected."
+                    : `Score: ${data.score.toFixed(1)}%`;
+                statusEl.textContent = "Status: " + msg;
+                statusEl.className = data.score != null ? "ok" : "muted";
+              }
             } catch (e) {
               statusEl.textContent = "Status: backend error";
               statusEl.className = "err";

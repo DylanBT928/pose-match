@@ -13,7 +13,7 @@ try:
 except Exception:
     pass
 
-MODEL = YOLO("yolov8n-pose.pt")
+MODEL = YOLO("yolo11n-pose.pt")
 IMG_SIZE = 320
 CONF = 0.15
 
@@ -22,6 +22,43 @@ SKELETON = [
     (5,7),(7,9),(6,8),(8,10),
     (11,13),(13,15),(12,14),(14,16),
     (5,6),(11,12),(5,11),(6,12)
+]
+
+# Skeleton colors for visualization (RGB tuples)
+SKELETON_COLORS = [
+    (255, 0, 0),    # (5,7) - left shoulder to left elbow - red
+    (255, 128, 0),  # (7,9) - left elbow to left wrist - orange
+    (0, 255, 0),    # (6,8) - right shoulder to right elbow - green
+    (0, 255, 128),  # (8,10) - right elbow to right wrist - light green
+    (255, 0, 255),  # (11,13) - left hip to left knee - magenta
+    (255, 128, 255),# (13,15) - left knee to left ankle - light magenta
+    (0, 0, 255),    # (12,14) - right hip to right knee - blue
+    (128, 128, 255),# (14,16) - right knee to right ankle - light blue
+    (255, 255, 0),  # (5,6) - shoulders - yellow
+    (128, 255, 255),# (11,12) - hips - cyan
+    (255, 0, 128),  # (5,11) - left shoulder to left hip - pink
+    (0, 128, 255)   # (6,12) - right shoulder to right hip - light blue
+]
+
+# Keypoint colors (for the joints themselves)
+KEYPOINT_COLORS = [
+    (255, 0, 0),    # 0: nose - red
+    (255, 85, 0),   # 1: left eye - orange
+    (255, 170, 0),  # 2: right eye - yellow-orange
+    (255, 255, 0),  # 3: left ear - yellow
+    (170, 255, 0),  # 4: right ear - yellow-green
+    (85, 255, 0),   # 5: left shoulder - green
+    (0, 255, 0),    # 6: right shoulder - bright green
+    (0, 255, 85),   # 7: left elbow - green-cyan
+    (0, 255, 170),  # 8: right elbow - cyan-green
+    (0, 255, 255),  # 9: left wrist - cyan
+    (0, 170, 255),  # 10: right wrist - cyan-blue
+    (0, 85, 255),   # 11: left hip - blue
+    (0, 0, 255),    # 12: right hip - bright blue
+    (85, 0, 255),   # 13: left knee - blue-purple
+    (170, 0, 255),  # 14: right knee - purple-blue
+    (255, 0, 255),  # 15: left ankle - magenta
+    (255, 0, 170)   # 16: right ankle - magenta-red
 ]
 
 app = Flask(__name__)
@@ -119,8 +156,63 @@ def read_frame_rgb(file_storage):
 def kp_to_list(kp):
     return None if kp is None else [[float(x), float(y)] for x, y in kp]
 
+def draw_skeleton_on_image(img_rgb, keypoints, thickness=3, keypoint_radius=5):
+    """
+    Draw colorful skeleton on image similar to the reference image.
+    
+    Args:
+        img_rgb: Input image as RGB numpy array
+        keypoints: (17,2) array of keypoint coordinates
+        thickness: Line thickness for skeleton
+        keypoint_radius: Radius for keypoint circles
+    
+    Returns:
+        Image with skeleton drawn
+    """
+    if keypoints is None or len(keypoints) != 17:
+        return img_rgb
+    
+    # Create a copy to avoid modifying original
+    img_with_skeleton = img_rgb.copy()
+    
+    # Draw skeleton connections
+    for i, (start_idx, end_idx) in enumerate(SKELETON):
+        if (start_idx < len(keypoints) and end_idx < len(keypoints) and
+            np.isfinite(keypoints[start_idx]).all() and np.isfinite(keypoints[end_idx]).all()):
+            
+            start_point = tuple(map(int, keypoints[start_idx]))
+            end_point = tuple(map(int, keypoints[end_idx]))
+            color = SKELETON_COLORS[i % len(SKELETON_COLORS)]
+            
+            # Convert RGB to BGR for OpenCV
+            cv2_color = (color[2], color[1], color[0])
+            cv2.line(img_with_skeleton, start_point, end_point, cv2_color, thickness)
+    
+    # Draw keypoints as circles
+    for i, (x, y) in enumerate(keypoints):
+        if np.isfinite([x, y]).all():
+            center = (int(x), int(y))
+            color = KEYPOINT_COLORS[i % len(KEYPOINT_COLORS)]
+            cv2_color = (color[2], color[1], color[0])  # RGB to BGR
+            cv2.circle(img_with_skeleton, center, keypoint_radius, cv2_color, -1)
+            # Add a black border for better visibility
+            cv2.circle(img_with_skeleton, center, keypoint_radius, (0, 0, 0), 1)
+    
+    return img_with_skeleton
+
+def encode_image_to_base64(img_rgb):
+    """Convert RGB image to base64 encoded JPEG string."""
+    # Convert RGB to BGR for OpenCV
+    img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+    # Encode as JPEG
+    _, buffer = cv2.imencode('.jpg', img_bgr, [cv2.IMWRITE_JPEG_QUALITY, 90])
+    # Convert to base64
+    import base64
+    img_base64 = base64.b64encode(buffer).decode('utf-8')
+    return img_base64
+
 # ---------- Routes ----------
-@app.post("/infer")
+@app.route("/infer", methods=["POST"])
 def infer():
     """
     POST form-data:
@@ -152,7 +244,7 @@ def infer():
         message=("OK" if kp is not None else "No person detected")
     )
 
-@app.post("/set_target_from_frame")
+@app.route("/set_target_from_frame", methods=["POST"])
 def set_target_from_frame():
     """
     POST form-data: frame (UN-MIRRORED)
@@ -180,7 +272,7 @@ def set_target_from_frame():
 
     return jsonify(ok=True, message="Target set", keypoints=kp_to_list(kp), width=w, height=h)
 
-@app.post("/set_target_from_upload")
+@app.route("/set_target_from_upload", methods=["POST"])
 def set_target_from_upload():
     """
     POST form-data: image
@@ -208,12 +300,160 @@ def set_target_from_upload():
 
     return jsonify(ok=True, message="Target set", keypoints=kp_to_list(kp), width=w, height=h)
 
-@app.post("/clear_target")
+@app.route("/clear_target", methods=["POST"])
 def clear_target():
     global target_norm
     with state_lock:
         target_norm = None
     return jsonify(ok=True, message="Target cleared")
+
+@app.route("/visualize", methods=["POST"])
+def visualize():
+    """
+    POST form-data:
+      - frame: image blob
+    Returns: { image_base64: str, keypoints: [[x,y]..] | null, message: str, num_people: int }
+    """
+    file = request.files.get("frame", None)
+    if file is None:
+        return jsonify(error="no frame"), 400
+
+    img_rgb, w, h = read_frame_rgb(file)
+    if img_rgb is None:
+        return jsonify(image_base64=None, keypoints=None, message="Bad image", num_people=0)
+
+    # Use YOLO's built-in multi-person pose estimation
+    img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+    results = MODEL.predict(img_bgr, imgsz=IMG_SIZE, conf=CONF, verbose=False)
+    
+    if not results or len(results) == 0:
+        return jsonify(image_base64=None, keypoints=None, message="No detection", num_people=0)
+    
+    result = results[0]
+    
+    # Get number of people detected
+    num_people = 0
+    all_keypoints = []
+    
+    if hasattr(result, 'keypoints') and result.keypoints is not None:
+        kobj = result.keypoints
+        if hasattr(kobj, 'xy') and kobj.xy is not None:
+            num_people = len(kobj.xy)
+            # Convert all keypoints to list format
+            for i in range(num_people):
+                kp = _to_np(kobj.xy[i])
+                if kp.ndim == 2 and kp.shape[1] == 2:
+                    all_keypoints.append(kp_to_list(kp))
+    
+    # Use YOLO's built-in visualization (handles multiple people automatically)
+    annotated_img_bgr = result.plot(
+        boxes=True,      # Show bounding boxes
+        labels=True,     # Show labels
+        conf=True,       # Show confidence scores
+        line_width=2     # Skeleton line thickness
+    )
+    
+    # Convert back to RGB and then to base64
+    annotated_img_rgb = cv2.cvtColor(annotated_img_bgr, cv2.COLOR_BGR2RGB)
+    img_base64 = encode_image_to_base64(annotated_img_rgb)
+
+    return jsonify(
+        image_base64=img_base64,
+        keypoints=all_keypoints if all_keypoints else None,
+        num_people=num_people,
+        message=(f"Detected {num_people} person(s)" if num_people > 0 else "No person detected")
+    )
+
+@app.route("/infer_multiperson", methods=["POST"])
+def infer_multiperson():
+    """
+    POST form-data:
+      - frame: image blob (UN-MIRRORED)
+      - mirror: 'true'/'false' (ignored since frame is unmirrored)
+    Returns: { all_keypoints: [[[x,y]..], [[x,y]..], ...], num_people: int, message: str }
+    Multi-person version of /infer for real-time webcam use.
+    """
+    try:
+        file = request.files.get("frame", None)
+        if file is None:
+            return jsonify(error="no frame"), 400
+
+        img_rgb, w, h = read_frame_rgb(file)
+        if img_rgb is None:
+            return jsonify(all_keypoints=None, num_people=0, message="Bad image")
+
+        # Use YOLO's multi-person detection (no visualization, just keypoints)
+        img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+        results = MODEL.predict(img_bgr, imgsz=IMG_SIZE, conf=CONF, verbose=False)
+        
+        if not results or len(results) == 0:
+            return jsonify(all_keypoints=None, num_people=0, message="No detection")
+        
+        result = results[0]
+        
+        # Get all keypoints for all people
+        num_people = 0
+        all_keypoints = []
+        
+        if hasattr(result, 'keypoints') and result.keypoints is not None:
+            kobj = result.keypoints
+            if hasattr(kobj, 'xy') and kobj.xy is not None:
+                num_people = len(kobj.xy)
+                # Convert all keypoints to list format
+                for i in range(num_people):
+                    try:
+                        kp = _to_np(kobj.xy[i])
+                        if kp.ndim == 2 and kp.shape[1] == 2:
+                            all_keypoints.append(kp_to_list(kp))
+                    except Exception as e:
+                        print(f"Error processing person {i}: {e}")
+                        continue
+
+        return jsonify(
+            all_keypoints=all_keypoints if all_keypoints else None,
+            num_people=num_people,
+            message=(f"Detected {num_people} person(s)" if num_people > 0 else "No person detected")
+        )
+    
+    except Exception as e:
+        print(f"Error in infer_multiperson: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify(
+            all_keypoints=None, 
+            num_people=0, 
+            message=f"Server error: {str(e)}"
+        ), 500
+
+@app.route("/visualize_single", methods=["POST"])
+def visualize_single():
+    """
+    POST form-data:
+      - frame: image blob
+    Returns: { image_base64: str, keypoints: [[x,y]..] | null, message: str }
+    Legacy endpoint that uses custom single-person visualization.
+    """
+    file = request.files.get("frame", None)
+    if file is None:
+        return jsonify(error="no frame"), 400
+
+    img_rgb, w, h = read_frame_rgb(file)
+    if img_rgb is None:
+        return jsonify(image_base64=None, keypoints=None, message="Bad image")
+
+    kp = detect_keypoints_rgb(img_rgb)
+    
+    # Draw skeleton on image (single person only)
+    img_with_skeleton = draw_skeleton_on_image(img_rgb, kp)
+    
+    # Convert to base64
+    img_base64 = encode_image_to_base64(img_with_skeleton)
+
+    return jsonify(
+        image_base64=img_base64,
+        keypoints=kp_to_list(kp),
+        message=("OK" if kp is not None else "No person detected")
+    )
 
 if __name__ == "__main__":
     # Run on localhost:5000

@@ -182,4 +182,4 @@ cython_debug/
 
 poses/
 *.DS_Store
-yolov8n-pose.pt
+yolo11n-pose.pt
