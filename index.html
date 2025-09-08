@@ -82,9 +82,73 @@
       .err {
         color: #ff6b6b;
       }
+      .snapshots-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+        gap: 12px;
+        min-height: 120px;
+      }
+      .snapshot-item {
+        position: relative;
+        border-radius: 8px;
+        overflow: hidden;
+        background: #141414;
+        border: 2px solid #333;
+      }
+      .snapshot-item img {
+        width: 100%;
+        height: auto;
+        display: block;
+      }
+      .snapshot-info {
+        position: absolute;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        background: linear-gradient(transparent, rgba(0, 0, 0, 0.8));
+        color: white;
+        padding: 8px;
+        font-size: 12px;
+        text-align: center;
+      }
+      .snapshot-remove {
+        position: absolute;
+        top: 4px;
+        right: 4px;
+        background: rgba(0, 0, 0, 0.7);
+        color: white;
+        border: none;
+        border-radius: 50%;
+        width: 24px;
+        height: 24px;
+        cursor: pointer;
+        font-size: 12px;
+      }
+      .snapshot-remove:hover {
+        background: rgba(255, 0, 0, 0.7);
+      }
+      .empty-state {
+        grid-column: 1 / -1;
+        text-align: center;
+        padding: 40px 20px;
+        color: #666;
+        font-style: italic;
+      }
+      .clear-btn {
+        margin-top: 12px;
+        background: #444;
+        border: 1px solid #555;
+        color: #ccc;
+      }
+      .clear-btn:hover {
+        background: #555;
+      }
       @media (max-width: 980px) {
         .grid {
           grid-template-columns: 1fr;
+        }
+        .snapshots-grid {
+          grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
         }
       }
     </style>
@@ -134,6 +198,21 @@
           </div>
         </section>
       </div>
+
+      <section class="panel">
+        <h3>Winning Snapshots</h3>
+        <div class="muted" style="margin-bottom: 12px">
+          Automatic captures when you achieve 90%+ accuracy
+        </div>
+        <div id="winningSnapshots" class="snapshots-grid">
+          <div class="empty-state">
+            🏆 Achieve 90%+ accuracy to capture winning poses!
+          </div>
+        </div>
+        <button id="clearSnapshots" class="clear-btn">
+          🧹 Clear All Snapshots
+        </button>
+      </section>
     </main>
 
     <script>
@@ -151,6 +230,8 @@
       const mirrorEl = document.getElementById("mirror");
       const multipersonEl = document.getElementById("multiperson");
       const statusEl = document.getElementById("status");
+      const winningSnapshotsEl = document.getElementById("winningSnapshots");
+      const clearSnapshotsBtn = document.getElementById("clearSnapshots");
 
       // Hidden <video> and OFFSCREEN canvas (feed backend UN-MIRRORED frames)
       const video = document.createElement("video");
@@ -165,8 +246,17 @@
 
       let lastKp = null; // [{x,y}...], coords in live canvas space (single person)
       let lastAllKp = null; // [[[x,y}...], [[x,y]...], ...], coords for all people (multi-person)
+      let lastKpScores = null; // [score...], accuracy scores (0-100) for each keypoint
+      let lastAllScores = null; // [score...], overall scores for each person in multi-person mode
+      let lastAllKpScores = null; // [[score...]...], keypoint scores for each person in multi-person mode
       let frameCount = 0;
       const sendEvery = 3; // throttle backend calls
+
+      // Winning snapshots
+      let winningSnapshots = [];
+      let lastSnapshotTime = 0;
+      const SNAPSHOT_COOLDOWN = 3000; // 3 seconds between snapshots
+      const MAX_SNAPSHOTS = 12; // Maximum number of snapshots to keep
 
       // For uploaded target fit (so we can scale returned keypoints)
       let lastTargetFit = null; // { sx, sy, ox, oy } // scaleX/Y & offset
@@ -187,12 +277,31 @@
         [6, 12],
       ];
 
-      function drawSkeleton(ctx, kp, color = "lime", radius = 3) {
+      // Convert accuracy score (0-100) to color
+      function scoreToColor(score) {
+        if (score >= 70) {
+          // Green for good match (70-100%)
+          return "#00ff00";
+        } else if (score >= 30) {
+          // Yellow for close match (30-70%)
+          return "#ffff00";
+        } else {
+          // Red for poor match (0-30%)
+          return "#ff0000";
+        }
+      }
+
+      function drawSkeleton(
+        ctx,
+        kp,
+        color = "lime",
+        radius = 3,
+        kpScores = null
+      ) {
         if (!kp || !kp.length) return;
         ctx.save();
         ctx.lineWidth = 2;
-        ctx.strokeStyle = color;
-        ctx.fillStyle = color;
+
         // lines
         for (const [i, j] of SKELETON) {
           const a = kp[i],
@@ -205,16 +314,40 @@
             !Number.isFinite(b[1])
           )
             continue;
+
+          // Use accuracy-based color for lines if scores available
+          let lineColor = color;
+          if (
+            kpScores &&
+            kpScores[i] !== undefined &&
+            kpScores[j] !== undefined
+          ) {
+            // Use average accuracy of the two connected keypoints
+            const avgScore = (kpScores[i] + kpScores[j]) / 2;
+            lineColor = scoreToColor(avgScore);
+          }
+
+          ctx.strokeStyle = lineColor;
           ctx.beginPath();
           ctx.moveTo(a[0], a[1]);
           ctx.lineTo(b[0], b[1]);
           ctx.stroke();
         }
+
         // points
-        for (const p of kp) {
+        for (let idx = 0; idx < kp.length; idx++) {
+          const p = kp[idx];
           if (!p) continue;
           const [x, y] = p;
           if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+
+          // Use accuracy-based color for points if scores available
+          let pointColor = color;
+          if (kpScores && kpScores[idx] !== undefined) {
+            pointColor = scoreToColor(kpScores[idx]);
+          }
+
+          ctx.fillStyle = pointColor;
           ctx.beginPath();
           ctx.arc(x, y, radius, 0, Math.PI * 2);
           ctx.fill();
@@ -222,10 +355,10 @@
         ctx.restore();
       }
 
-      function drawMultipleSkeletons(ctx, allKp) {
+      function drawMultipleSkeletons(ctx, allKp, allKpScores = null) {
         if (!allKp || !allKp.length) return;
 
-        // Different colors for different people
+        // Different colors for different people (used when no accuracy scores available)
         const colors = [
           "#00ff00", // lime
           "#ff6b6b", // red
@@ -241,7 +374,9 @@
 
         allKp.forEach((personKp, index) => {
           const color = colors[index % colors.length];
-          drawSkeleton(ctx, personKp, color, 3);
+          const personKpScores =
+            allKpScores && allKpScores[index] ? allKpScores[index] : null;
+          drawSkeleton(ctx, personKp, color, 3, personKpScores);
         });
       }
 
@@ -260,6 +395,111 @@
         const resp = await fetch(url, { method: "POST", body: fd });
         if (!resp.ok) throw new Error(resp.statusText);
         return resp.json();
+      }
+
+      // Capture a winning snapshot
+      function captureWinningSnapshot() {
+        const now = Date.now();
+        if (now - lastSnapshotTime < SNAPSHOT_COOLDOWN) {
+          return; // Too soon since last snapshot
+        }
+        lastSnapshotTime = now;
+
+        // Create a canvas to capture the current live view
+        const captureCanvas = document.createElement("canvas");
+        captureCanvas.width = live.width;
+        captureCanvas.height = live.height;
+        const captureCtx = captureCanvas.getContext("2d");
+
+        // Draw the current live view
+        captureCtx.clearRect(0, 0, captureCanvas.width, captureCanvas.height);
+        captureCtx.save();
+        if (mirrorEl.checked) {
+          captureCtx.translate(captureCanvas.width, 0);
+          captureCtx.scale(-1, 1);
+        }
+        captureCtx.drawImage(
+          video,
+          0,
+          0,
+          captureCanvas.width,
+          captureCanvas.height
+        );
+
+        // Draw the skeleton overlay
+        if (multipersonEl.checked && lastAllKp) {
+          drawMultipleSkeletons(captureCtx, lastAllKp, lastAllKpScores);
+        } else if (lastKp) {
+          drawSkeleton(captureCtx, lastKp, "lime", 3, lastKpScores);
+        }
+        captureCtx.restore();
+
+        // Convert to data URL
+        const dataURL = captureCanvas.toDataURL("image/jpeg", 0.8);
+
+        // Add to snapshots array
+        const snapshot = {
+          id: Date.now(),
+          dataURL: dataURL,
+          timestamp: new Date().toLocaleTimeString(),
+          score: Math.round(getLastScore()),
+        };
+
+        winningSnapshots.unshift(snapshot); // Add to beginning
+
+        // Remove old snapshots if we exceed max
+        if (winningSnapshots.length > MAX_SNAPSHOTS) {
+          winningSnapshots = winningSnapshots.slice(0, MAX_SNAPSHOTS);
+        }
+
+        updateSnapshotsDisplay();
+      }
+
+      function getLastScore() {
+        // Extract the last score from the status text
+        const statusText = statusEl.textContent;
+        // Try multi-person format first
+        let scoreMatch = statusText.match(/Best score: ([\d.]+)%/);
+        if (!scoreMatch) {
+          // Try single-person format
+          scoreMatch = statusText.match(/Score: ([\d.]+)%/);
+        }
+        return scoreMatch ? parseFloat(scoreMatch[1]) : 90;
+      }
+
+      function updateSnapshotsDisplay() {
+        if (winningSnapshots.length === 0) {
+          winningSnapshotsEl.innerHTML = `
+            <div class="empty-state">
+              🏆 Achieve 90%+ accuracy to capture winning poses!
+            </div>
+          `;
+          return;
+        }
+
+        winningSnapshotsEl.innerHTML = winningSnapshots
+          .map(
+            (snapshot) => `
+          <div class="snapshot-item">
+            <img src="${snapshot.dataURL}" alt="Winning pose ${snapshot.score}%">
+            <div class="snapshot-info">
+              ${snapshot.score}% • ${snapshot.timestamp}
+            </div>
+            <button class="snapshot-remove" onclick="removeSnapshot(${snapshot.id})">×</button>
+          </div>
+        `
+          )
+          .join("");
+      }
+
+      function removeSnapshot(id) {
+        winningSnapshots = winningSnapshots.filter((s) => s.id !== id);
+        updateSnapshotsDisplay();
+      }
+
+      function clearAllSnapshots() {
+        winningSnapshots = [];
+        updateSnapshotsDisplay();
       }
 
       // Draw an ImageBitmap to canvas preserving aspect, return fit params
@@ -320,9 +560,9 @@
 
         // Draw skeletons based on mode
         if (multipersonEl.checked) {
-          drawMultipleSkeletons(lctx, lastAllKp);
+          drawMultipleSkeletons(lctx, lastAllKp, lastAllKpScores);
         } else {
-          drawSkeleton(lctx, lastKp, "lime");
+          drawSkeleton(lctx, lastKp, "lime", 3, lastKpScores);
         }
 
         lctx.restore();
@@ -344,12 +584,33 @@
                   false
                 );
                 lastAllKp = data.all_keypoints || null;
+                lastAllScores = data.all_scores || null;
+                lastAllKpScores = data.all_keypoint_scores || null;
                 lastKp = null; // Clear single person data
+                lastKpScores = null; // Clear single person scores
 
-                const msg =
-                  data.all_keypoints && data.all_keypoints.length > 0
-                    ? `Tracking ${data.num_people} person(s). Multi-person mode active.`
-                    : "No people detected.";
+                // Check for winning scores in multi-person mode
+                if (lastAllScores) {
+                  const maxScore = Math.max(
+                    ...lastAllScores.filter((s) => s !== null)
+                  );
+                  if (maxScore >= 90) {
+                    captureWinningSnapshot();
+                  }
+                }
+
+                let msg = "No people detected.";
+                if (data.all_keypoints && data.all_keypoints.length > 0) {
+                  if (lastAllScores && lastAllScores.some((s) => s !== null)) {
+                    const validScores = lastAllScores.filter((s) => s !== null);
+                    const bestScore = Math.max(...validScores);
+                    msg = `Tracking ${
+                      data.num_people
+                    } person(s). Best score: ${bestScore.toFixed(1)}%`;
+                  } else {
+                    msg = `Tracking ${data.num_people} person(s). Multi-person mode active.`;
+                  }
+                }
                 statusEl.textContent = "Status: " + msg;
                 statusEl.className =
                   data.all_keypoints && data.all_keypoints.length > 0
@@ -359,7 +620,27 @@
                 // Single person mode (original behavior)
                 const data = await postFrame(`${API}/infer`, blob, false);
                 lastKp = data.keypoints || null;
+                lastKpScores = data.keypoint_scores || null;
                 lastAllKp = null; // Clear multi-person data
+
+                // Check for winning score and capture snapshot
+                if (data.score != null && data.score >= 90) {
+                  captureWinningSnapshot();
+                }
+
+                // For testing: capture snapshot every 10 seconds if score > 80
+                if (
+                  data.score != null &&
+                  data.score >= 80 &&
+                  frameCount % 300 === 0
+                ) {
+                  console.log(
+                    "Test snapshot captured at",
+                    data.score.toFixed(1),
+                    "%"
+                  );
+                  captureWinningSnapshot();
+                }
 
                 const msg =
                   data.score == null
@@ -523,6 +804,10 @@
         } finally {
           uploadInp.value = "";
         }
+      };
+
+      clearSnapshotsBtn.onclick = () => {
+        clearAllSnapshots();
       };
     </script>
   </body>

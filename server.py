@@ -487,23 +487,46 @@ def infer_multiperson():
         # Get all keypoints for all people
         num_people = 0
         all_keypoints = []
+        all_scores = []
+        all_keypoint_scores = []
+        
+        # Get target for comparison
+        with state_lock:
+            tgt = None if target_norm is None else target_norm.copy()
         
         if hasattr(result, 'keypoints') and result.keypoints is not None:
             kobj = result.keypoints
             if hasattr(kobj, 'xy') and kobj.xy is not None:
                 num_people = len(kobj.xy)
-                # Convert all keypoints to list format
+                # Convert all keypoints to list format and calculate scores
                 for i in range(num_people):
                     try:
                         kp = _to_np(kobj.xy[i])
                         if kp.ndim == 2 and kp.shape[1] == 2:
                             all_keypoints.append(kp_to_list(kp))
+                            
+                            # Calculate accuracy scores if target exists
+                            if tgt is not None:
+                                live_norm = normalize_keypoints(kp)
+                                if live_norm is not None:
+                                    person_score = pose_score(live_norm, tgt)
+                                    person_kp_scores = keypoint_accuracy_scores(live_norm, tgt)
+                                    all_scores.append(person_score)
+                                    all_keypoint_scores.append(person_kp_scores)
+                                else:
+                                    all_scores.append(None)
+                                    all_keypoint_scores.append(None)
+                            else:
+                                all_scores.append(None)
+                                all_keypoint_scores.append(None)
                     except Exception as e:
                         print(f"Error processing person {i}: {e}")
                         continue
 
         return jsonify(
             all_keypoints=all_keypoints if all_keypoints else None,
+            all_scores=all_scores if any(s is not None for s in all_scores) else None,
+            all_keypoint_scores=all_keypoint_scores if any(s is not None for s in all_keypoint_scores) else None,
             num_people=num_people,
             message=(f"Detected {num_people} person(s)" if num_people > 0 else "No person detected")
         )
