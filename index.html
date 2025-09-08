@@ -376,6 +376,7 @@
           const color = colors[index % colors.length];
           const personKpScores =
             allKpScores && allKpScores[index] ? allKpScores[index] : null;
+
           drawSkeleton(ctx, personKp, color, 3, personKpScores);
         });
       }
@@ -456,14 +457,21 @@
       }
 
       function getLastScore() {
-        // Extract the last score from the status text
-        const statusText = statusEl.textContent;
-        // Try multi-person format first
-        let scoreMatch = statusText.match(/Best score: ([\d.]+)%/);
-        if (!scoreMatch) {
-          // Try single-person format
-          scoreMatch = statusText.match(/Score: ([\d.]+)%/);
+        // Extract the highest score from the status text
+        const statusText = statusEl.textContent || statusEl.innerHTML;
+
+        // Try multi-person format first - find all Person X: Y% patterns
+        const multiPersonMatches = statusText.match(/Person \d+: ([\d.]+)%/g);
+        if (multiPersonMatches) {
+          const scores = multiPersonMatches.map((match) => {
+            const scoreMatch = match.match(/([\d.]+)%/);
+            return scoreMatch ? parseFloat(scoreMatch[1]) : 0;
+          });
+          return Math.max(...scores);
         }
+
+        // Try single-person format
+        const scoreMatch = statusText.match(/Score: ([\d.]+)%/);
         return scoreMatch ? parseFloat(scoreMatch[1]) : 90;
       }
 
@@ -602,16 +610,20 @@
                 let msg = "No people detected.";
                 if (data.all_keypoints && data.all_keypoints.length > 0) {
                   if (lastAllScores && lastAllScores.some((s) => s !== null)) {
-                    const validScores = lastAllScores.filter((s) => s !== null);
-                    const bestScore = Math.max(...validScores);
-                    msg = `Tracking ${
-                      data.num_people
-                    } person(s). Best score: ${bestScore.toFixed(1)}%`;
+                    msg = `Tracking ${data.num_people} person(s)\n`;
+                    lastAllScores.forEach((score, index) => {
+                      if (score !== null) {
+                        msg += `Person ${index + 1}: ${score.toFixed(1)}%\n`;
+                      } else {
+                        msg += `Person ${index + 1}: No target set\n`;
+                      }
+                    });
+                    msg = msg.trim(); // Remove trailing newline
                   } else {
                     msg = `Tracking ${data.num_people} person(s). Multi-person mode active.`;
                   }
                 }
-                statusEl.textContent = "Status: " + msg;
+                statusEl.innerHTML = "Status: " + msg.replace(/\n/g, "<br>");
                 statusEl.className =
                   data.all_keypoints && data.all_keypoints.length > 0
                     ? "ok"
