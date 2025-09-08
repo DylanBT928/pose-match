@@ -307,6 +307,99 @@ def clear_target():
         target_norm = None
     return jsonify(ok=True, message="Target cleared")
 
+@app.route("/set_target_multiperson_frame", methods=["POST"])
+def set_target_multiperson_frame():
+    """
+    POST form-data: frame (UN-MIRRORED)
+    Sets target from webcam for multi-person mode. Returns all detected people.
+    Returns {ok, message, all_keypoints, num_people, width, height}
+    """
+    file = request.files.get("frame", None)
+    if file is None:
+        return jsonify(ok=False, message="no frame"), 400
+
+    img_rgb, w, h = read_frame_rgb(file)
+    if img_rgb is None:
+        return jsonify(ok=False, message="Bad image"), 400
+
+    # Use YOLO's multi-person detection
+    img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+    results = MODEL.predict(img_bgr, imgsz=IMG_SIZE, conf=CONF, verbose=False)
+    
+    if not results or len(results) == 0:
+        return jsonify(ok=False, message="No detection", all_keypoints=None, num_people=0, width=w, height=h)
+    
+    result = results[0]
+    
+    # Get all keypoints for all people
+    num_people = 0
+    all_keypoints = []
+    
+    if hasattr(result, 'keypoints') and result.keypoints is not None:
+        kobj = result.keypoints
+        if hasattr(kobj, 'xy') and kobj.xy is not None:
+            num_people = len(kobj.xy)
+            for i in range(num_people):
+                try:
+                    kp = _to_np(kobj.xy[i])
+                    if kp.ndim == 2 and kp.shape[1] == 2:
+                        all_keypoints.append(kp_to_list(kp))
+                except Exception as e:
+                    print(f"Error processing person {i}: {e}")
+                    continue
+
+    if num_people == 0:
+        return jsonify(ok=False, message="No people detected", all_keypoints=None, num_people=0, width=w, height=h)
+
+    return jsonify(ok=True, message=f"Target set with {num_people} person(s)", 
+                  all_keypoints=all_keypoints, num_people=num_people, width=w, height=h)
+
+@app.route("/set_target_multiperson_upload", methods=["POST"])
+def set_target_multiperson_upload():
+    """
+    POST form-data: image
+    Sets target from uploaded image for multi-person mode.
+    """
+    file = request.files.get("image", None)
+    if file is None:
+        return jsonify(ok=False, message="no image"), 400
+
+    img_rgb, w, h = read_frame_rgb(file)
+    if img_rgb is None:
+        return jsonify(ok=False, message="Bad image"), 400
+
+    # Use YOLO's multi-person detection
+    img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+    results = MODEL.predict(img_bgr, imgsz=IMG_SIZE, conf=CONF, verbose=False)
+    
+    if not results or len(results) == 0:
+        return jsonify(ok=False, message="No detection", all_keypoints=None, num_people=0, width=w, height=h)
+    
+    result = results[0]
+    
+    # Get all keypoints for all people
+    num_people = 0
+    all_keypoints = []
+    
+    if hasattr(result, 'keypoints') and result.keypoints is not None:
+        kobj = result.keypoints
+        if hasattr(kobj, 'xy') and kobj.xy is not None:
+            num_people = len(kobj.xy)
+            for i in range(num_people):
+                try:
+                    kp = _to_np(kobj.xy[i])
+                    if kp.ndim == 2 and kp.shape[1] == 2:
+                        all_keypoints.append(kp_to_list(kp))
+                except Exception as e:
+                    print(f"Error processing person {i}: {e}")
+                    continue
+
+    if num_people == 0:
+        return jsonify(ok=False, message="No people detected", all_keypoints=None, num_people=0, width=w, height=h)
+
+    return jsonify(ok=True, message=f"Target set with {num_people} person(s)", 
+                  all_keypoints=all_keypoints, num_people=num_people, width=w, height=h)
+
 @app.route("/visualize", methods=["POST"])
 def visualize():
     """

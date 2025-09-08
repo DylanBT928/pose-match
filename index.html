@@ -384,12 +384,14 @@
               const snap = await createImageBitmap(blob);
               drawImageFit(tctx, snap, target);
 
-              const data = await postFrame(
-                `${API}/set_target_from_frame`,
-                blob,
-                false
-              );
-              if (data.ok && data.keypoints) {
+              // Choose endpoint based on multi-person mode
+              const endpoint = multipersonEl.checked
+                ? `${API}/set_target_multiperson_frame`
+                : `${API}/set_target_from_frame`;
+
+              const data = await postFrame(endpoint, blob, false);
+
+              if (data.ok) {
                 const s = Math.min(
                   target.width / work.width,
                   target.height / work.height
@@ -398,12 +400,29 @@
                   dh = work.height * s;
                 const ox = (target.width - dw) / 2;
                 const oy = (target.height - dh) / 2;
-                const sk = data.keypoints.map(([x, y]) => [
-                  ox + x * s,
-                  oy + y * s,
-                ]);
-                drawSkeleton(tctx, sk, "yellow");
-                statusEl.textContent = "Status: Target set!";
+
+                if (multipersonEl.checked && data.all_keypoints) {
+                  // Multi-person mode: draw all people with different colors
+                  const scaledKeypoints = data.all_keypoints.map((personKp) =>
+                    personKp.map(([x, y]) => [ox + x * s, oy + y * s])
+                  );
+                  drawMultipleSkeletons(tctx, scaledKeypoints);
+                  statusEl.textContent = `Status: Target set with ${data.num_people} person(s)!`;
+                } else if (!multipersonEl.checked && data.keypoints) {
+                  // Single-person mode: draw one skeleton
+                  const sk = data.keypoints.map(([x, y]) => [
+                    ox + x * s,
+                    oy + y * s,
+                  ]);
+                  drawSkeleton(tctx, sk, "yellow");
+                  statusEl.textContent = "Status: Target set!";
+                } else {
+                  statusEl.textContent =
+                    "Status: " + (data.message || "No target set");
+                  statusEl.className = "warn";
+                  return;
+                }
+
                 statusEl.className = "ok";
               } else {
                 statusEl.textContent =
@@ -438,15 +457,38 @@
         lastTargetFit = drawImageFit(tctx, img, target);
 
         try {
-          const data = await postImage(`${API}/set_target_from_upload`, file);
-          if (data.ok && data.keypoints) {
+          // Choose endpoint based on multi-person mode
+          const endpoint = multipersonEl.checked
+            ? `${API}/set_target_multiperson_upload`
+            : `${API}/set_target_from_upload`;
+
+          const data = await postImage(endpoint, file);
+
+          if (data.ok) {
             const { sx, sy, ox, oy } = lastTargetFit;
-            const sk = data.keypoints.map(([x, y]) => [
-              ox + x * sx,
-              oy + y * sy,
-            ]);
-            drawSkeleton(tctx, sk, "yellow");
-            statusEl.textContent = "Status: Target set from image!";
+
+            if (multipersonEl.checked && data.all_keypoints) {
+              // Multi-person mode: draw all people with different colors
+              const scaledKeypoints = data.all_keypoints.map((personKp) =>
+                personKp.map(([x, y]) => [ox + x * sx, oy + y * sy])
+              );
+              drawMultipleSkeletons(tctx, scaledKeypoints);
+              statusEl.textContent = `Status: Target set from image with ${data.num_people} person(s)!`;
+            } else if (!multipersonEl.checked && data.keypoints) {
+              // Single-person mode: draw one skeleton
+              const sk = data.keypoints.map(([x, y]) => [
+                ox + x * sx,
+                oy + y * sy,
+              ]);
+              drawSkeleton(tctx, sk, "yellow");
+              statusEl.textContent = "Status: Target set from image!";
+            } else {
+              statusEl.textContent =
+                "Status: " + (data.message || "No target set");
+              statusEl.className = "warn";
+              return;
+            }
+
             statusEl.className = "ok";
           } else {
             statusEl.textContent =
