@@ -204,11 +204,11 @@
       <section class="panel">
         <h3>Winning Snapshots</h3>
         <div class="muted" style="margin-bottom: 12px">
-          Automatic captures when you achieve 90%+ accuracy
+          Automatic captures when you achieve 80%+ accuracy
         </div>
         <div id="winningSnapshots" class="snapshots-grid">
           <div class="empty-state">
-            🏆 Achieve 90%+ accuracy to capture winning poses!
+            🏆 Achieve 80%+ accuracy to capture winning poses!
           </div>
         </div>
         <button id="clearSnapshots" class="clear-btn">
@@ -431,12 +431,12 @@
           );
         }
         const one = text.match(/Score: ([\d.]+)%/);
-        return one ? parseFloat(one[1]) : 90;
+        return one ? parseFloat(one[1]) : 80;
       }
 
       function updateSnapshotsDisplay() {
         if (winningSnapshots.length === 0) {
-          winningSnapshotsEl.innerHTML = `<div class="empty-state">🏆 Achieve 90%+ accuracy to capture winning poses!</div>`;
+          winningSnapshotsEl.innerHTML = `<div class="empty-state">🏆 Achieve 80%+ accuracy to capture winning poses!</div>`;
           return;
         }
         winningSnapshotsEl.innerHTML = winningSnapshots
@@ -534,7 +534,7 @@
                   const maxScore = Math.max(
                     ...lastAllScores.filter((s) => s !== null)
                   );
-                  if (maxScore >= 90) captureWinningSnapshot();
+                  if (maxScore >= 80) captureWinningSnapshot();
                 }
 
                 let msg = "No people detected.";
@@ -563,7 +563,7 @@
                 lastKpScores = data.keypoint_scores || null;
                 lastAllKp = null;
 
-                if (data.score != null && data.score >= 90)
+                if (data.score != null && data.score >= 80)
                   captureWinningSnapshot();
                 if (
                   data.score != null &&
