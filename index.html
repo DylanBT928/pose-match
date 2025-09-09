@@ -106,7 +106,7 @@
         left: 0;
         right: 0;
         background: linear-gradient(transparent, rgba(0, 0, 0, 0.8));
-        color: white;
+        color: #fff;
         padding: 8px;
         font-size: 12px;
         text-align: center;
@@ -116,7 +116,7 @@
         top: 4px;
         right: 4px;
         background: rgba(0, 0, 0, 0.7);
-        color: white;
+        color: #fff;
         border: none;
         border-radius: 50%;
         width: 24px;
@@ -128,7 +128,7 @@
         background: rgba(255, 0, 0, 0.7);
       }
       .empty-state {
-        grid-column: 1 / -1;
+        grid-column: 1/-1;
         text-align: center;
         padding: 40px 20px;
         color: #666;
@@ -170,19 +170,21 @@
           <div class="row" style="margin-top: 8px">
             <button id="openCam">Open camera</button>
             <button id="setTarget">📸 Set target from webcam</button>
-            <label class="btn">
-              Upload target image…
-              <input id="upload" type="file" accept="image/*" />
-            </label>
+            <label class="btn"
+              >Upload target image…
+              <input id="upload" type="file" accept="image/*"
+            /></label>
             <button id="clearTarget">🧹 Clear target</button>
-            <label class="row" style="gap: 6px">
-              <input type="checkbox" id="multiperson" />
-              <span>Multi-person mode</span>
-            </label>
-            <label class="row" style="margin-left: auto; gap: 6px">
-              <input type="checkbox" id="mirror" checked />
-              <span>Mirror webcam</span>
-            </label>
+            <label class="row" style="gap: 6px"
+              ><input type="checkbox" id="multiperson" /><span
+                >Multi-person mode</span
+              ></label
+            >
+            <label class="row" style="margin-left: auto; gap: 6px"
+              ><input type="checkbox" id="mirror" checked /><span
+                >Mirror webcam</span
+              ></label
+            >
           </div>
           <div id="status" class="muted" style="margin-top: 6px">
             Status: idle
@@ -216,7 +218,7 @@
     </main>
 
     <script>
-      const API = "http://127.0.0.1:5000"; // Flask server
+      const API = "http://127.0.0.1:5000";
 
       const live = document.getElementById("live");
       const lctx = live.getContext("2d");
@@ -233,7 +235,6 @@
       const winningSnapshotsEl = document.getElementById("winningSnapshots");
       const clearSnapshotsBtn = document.getElementById("clearSnapshots");
 
-      // Hidden <video> and OFFSCREEN canvas (feed backend UN-MIRRORED frames)
       const video = document.createElement("video");
       video.playsInline = true;
       video.muted = true;
@@ -244,24 +245,20 @@
       work.height = live.height;
       const wctx = work.getContext("2d");
 
-      let lastKp = null; // [{x,y}...], coords in live canvas space (single person)
-      let lastAllKp = null; // [[[x,y}...], [[x,y]...], ...], coords for all people (multi-person)
-      let lastKpScores = null; // [score...], accuracy scores (0-100) for each keypoint
-      let lastAllScores = null; // [score...], overall scores for each person in multi-person mode
-      let lastAllKpScores = null; // [[score...]...], keypoint scores for each person in multi-person mode
+      let lastKp = null,
+        lastAllKp = null;
+      let lastKpScores = null,
+        lastAllScores = null,
+        lastAllKpScores = null;
       let frameCount = 0;
-      const sendEvery = 3; // throttle backend calls
+      const sendEvery = 3;
 
-      // Winning snapshots
       let winningSnapshots = [];
       let lastSnapshotTime = 0;
-      const SNAPSHOT_COOLDOWN = 3000; // 3 seconds between snapshots
-      const MAX_SNAPSHOTS = 12; // Maximum number of snapshots to keep
+      const SNAPSHOT_COOLDOWN = 3000,
+        MAX_SNAPSHOTS = 12;
+      let lastTargetFit = null;
 
-      // For uploaded target fit (so we can scale returned keypoints)
-      let lastTargetFit = null; // { sx, sy, ox, oy } // scaleX/Y & offset
-
-      // COCO pairs
       const SKELETON = [
         [5, 7],
         [7, 9],
@@ -277,18 +274,24 @@
         [6, 12],
       ];
 
-      // Convert accuracy score (0-100) to color
       function scoreToColor(score) {
-        if (score >= 70) {
-          // Green for good match (70-100%)
-          return "#00ff00";
-        } else if (score >= 30) {
-          // Yellow for close match (30-70%)
-          return "#ffff00";
-        } else {
-          // Red for poor match (0-30%)
-          return "#ff0000";
-        }
+        if (score >= 70) return "#00ff00";
+        if (score >= 30) return "#ffff00";
+        return "#ff0000";
+      }
+      function onScreen(x, y, W, H, pad = 0) {
+        return x >= -pad && y >= -pad && x < W + pad && y < H + pad;
+      }
+      function looksInvalid(x, y, W, H) {
+        const pad = 1;
+        return (
+          !Number.isFinite(x) ||
+          !Number.isFinite(y) ||
+          x <= pad ||
+          y <= pad ||
+          x >= W - pad ||
+          y >= H - pad
+        );
       }
 
       function drawSkeleton(
@@ -296,57 +299,50 @@
         kp,
         color = "lime",
         radius = 3,
-        kpScores = null
+        kpScores = null,
+        hideOffscreen = true
       ) {
         if (!kp || !kp.length) return;
+        const W = ctx.canvas.width,
+          H = ctx.canvas.height;
         ctx.save();
         ctx.lineWidth = 2;
-
-        // lines
         for (const [i, j] of SKELETON) {
           const a = kp[i],
             b = kp[j];
           if (!a || !b) continue;
+          const [ax, ay] = a,
+            [bx, by] = b;
+          if (![ax, ay, bx, by].every(Number.isFinite)) continue;
           if (
-            !Number.isFinite(a[0]) ||
-            !Number.isFinite(a[1]) ||
-            !Number.isFinite(b[0]) ||
-            !Number.isFinite(b[1])
+            hideOffscreen &&
+            (looksInvalid(ax, ay, W, H) || looksInvalid(bx, by, W, H))
           )
             continue;
-
-          // Use accuracy-based color for lines if scores available
           let lineColor = color;
           if (
             kpScores &&
             kpScores[i] !== undefined &&
             kpScores[j] !== undefined
           ) {
-            // Use average accuracy of the two connected keypoints
-            const avgScore = (kpScores[i] + kpScores[j]) / 2;
-            lineColor = scoreToColor(avgScore);
+            lineColor = scoreToColor((kpScores[i] + kpScores[j]) / 2);
           }
-
           ctx.strokeStyle = lineColor;
           ctx.beginPath();
-          ctx.moveTo(a[0], a[1]);
-          ctx.lineTo(b[0], b[1]);
+          ctx.moveTo(ax, ay);
+          ctx.lineTo(bx, by);
           ctx.stroke();
         }
-
-        // points
         for (let idx = 0; idx < kp.length; idx++) {
           const p = kp[idx];
           if (!p) continue;
           const [x, y] = p;
           if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
-
-          // Use accuracy-based color for points if scores available
-          let pointColor = color;
-          if (kpScores && kpScores[idx] !== undefined) {
-            pointColor = scoreToColor(kpScores[idx]);
-          }
-
+          if (hideOffscreen && looksInvalid(x, y, W, H)) continue;
+          let pointColor =
+            kpScores && kpScores[idx] !== undefined
+              ? scoreToColor(kpScores[idx])
+              : color;
           ctx.fillStyle = pointColor;
           ctx.beginPath();
           ctx.arc(x, y, radius, 0, Math.PI * 2);
@@ -357,27 +353,22 @@
 
       function drawMultipleSkeletons(ctx, allKp, allKpScores = null) {
         if (!allKp || !allKp.length) return;
-
-        // Different colors for different people (used when no accuracy scores available)
         const colors = [
-          "#00ff00", // lime
-          "#ff6b6b", // red
-          "#4ecdc4", // teal
-          "#45b7d1", // blue
-          "#96ceb4", // mint
-          "#feca57", // yellow
-          "#ff9ff3", // pink
-          "#a8e6cf", // light green
-          "#dda0dd", // plum
-          "#98d8c8", // mint blue
+          "#00ff00",
+          "#ff6b6b",
+          "#4ecdc4",
+          "#45b7d1",
+          "#96ceb4",
+          "#feca57",
+          "#ff9ff3",
+          "#a8e6cf",
+          "#dda0dd",
+          "#98d8c8",
         ];
-
-        allKp.forEach((personKp, index) => {
-          const color = colors[index % colors.length];
-          const personKpScores =
-            allKpScores && allKpScores[index] ? allKpScores[index] : null;
-
-          drawSkeleton(ctx, personKp, color, 3, personKpScores);
+        allKp.forEach((personKp, i) => {
+          const color = colors[i % colors.length];
+          const scores = allKpScores && allKpScores[i] ? allKpScores[i] : null;
+          drawSkeleton(ctx, personKp, color, 3, scores, true);
         });
       }
 
@@ -385,179 +376,128 @@
         const fd = new FormData();
         fd.append("frame", blob, "frame.jpg");
         fd.append("mirror", String(mirror));
-        const resp = await fetch(url, { method: "POST", body: fd });
-        if (!resp.ok) throw new Error(resp.statusText);
-        return resp.json();
+        const r = await fetch(url, { method: "POST", body: fd });
+        if (!r.ok) throw new Error(r.statusText);
+        return r.json();
       }
-
       async function postImage(url, file) {
         const fd = new FormData();
         fd.append("image", file, file.name || "image.jpg");
-        const resp = await fetch(url, { method: "POST", body: fd });
-        if (!resp.ok) throw new Error(resp.statusText);
-        return resp.json();
+        const r = await fetch(url, { method: "POST", body: fd });
+        if (!r.ok) throw new Error(r.statusText);
+        return r.json();
       }
 
-      // Capture a winning snapshot
       function captureWinningSnapshot() {
         const now = Date.now();
-        if (now - lastSnapshotTime < SNAPSHOT_COOLDOWN) {
-          return; // Too soon since last snapshot
-        }
+        if (now - lastSnapshotTime < SNAPSHOT_COOLDOWN) return;
         lastSnapshotTime = now;
-
-        // Create a canvas to capture the current live view
-        const captureCanvas = document.createElement("canvas");
-        captureCanvas.width = live.width;
-        captureCanvas.height = live.height;
-        const captureCtx = captureCanvas.getContext("2d");
-
-        // Draw the current live view
-        captureCtx.clearRect(0, 0, captureCanvas.width, captureCanvas.height);
-        captureCtx.save();
+        const c = document.createElement("canvas");
+        c.width = live.width;
+        c.height = live.height;
+        const cx = c.getContext("2d");
+        cx.clearRect(0, 0, c.width, c.height);
+        cx.save();
         if (mirrorEl.checked) {
-          captureCtx.translate(captureCanvas.width, 0);
-          captureCtx.scale(-1, 1);
+          cx.translate(c.width, 0);
+          cx.scale(-1, 1);
         }
-        captureCtx.drawImage(
-          video,
-          0,
-          0,
-          captureCanvas.width,
-          captureCanvas.height
-        );
-
-        // Draw the skeleton overlay
-        if (multipersonEl.checked && lastAllKp) {
-          drawMultipleSkeletons(captureCtx, lastAllKp, lastAllKpScores);
-        } else if (lastKp) {
-          drawSkeleton(captureCtx, lastKp, "lime", 3, lastKpScores);
-        }
-        captureCtx.restore();
-
-        // Convert to data URL
-        const dataURL = captureCanvas.toDataURL("image/jpeg", 0.8);
-
-        // Add to snapshots array
+        cx.drawImage(video, 0, 0, c.width, c.height);
+        if (multipersonEl.checked && lastAllKp)
+          drawMultipleSkeletons(cx, lastAllKp, lastAllKpScores);
+        else if (lastKp)
+          drawSkeleton(cx, lastKp, "lime", 3, lastKpScores, true);
+        cx.restore();
         const snapshot = {
           id: Date.now(),
-          dataURL: dataURL,
+          dataURL: c.toDataURL("image/jpeg", 0.8),
           timestamp: new Date().toLocaleTimeString(),
           score: Math.round(getLastScore()),
         };
-
-        winningSnapshots.unshift(snapshot); // Add to beginning
-
-        // Remove old snapshots if we exceed max
-        if (winningSnapshots.length > MAX_SNAPSHOTS) {
+        winningSnapshots.unshift(snapshot);
+        if (winningSnapshots.length > MAX_SNAPSHOTS)
           winningSnapshots = winningSnapshots.slice(0, MAX_SNAPSHOTS);
-        }
-
         updateSnapshotsDisplay();
       }
 
       function getLastScore() {
-        // Extract the highest score from the status text
-        const statusText = statusEl.textContent || statusEl.innerHTML;
-
-        // Try multi-person format first - find all Person X: Y% patterns
-        const multiPersonMatches = statusText.match(/Person \d+: ([\d.]+)%/g);
-        if (multiPersonMatches) {
-          const scores = multiPersonMatches.map((match) => {
-            const scoreMatch = match.match(/([\d.]+)%/);
-            return scoreMatch ? parseFloat(scoreMatch[1]) : 0;
-          });
-          return Math.max(...scores);
+        const text = statusEl.textContent || statusEl.innerHTML;
+        const multi = text.match(/Person \d+: ([\d.]+)%/g);
+        if (multi) {
+          return Math.max(
+            ...multi.map((m) =>
+              m.match(/([\d.]+)%/) ? parseFloat(RegExp.$1) : 0
+            )
+          );
         }
-
-        // Try single-person format
-        const scoreMatch = statusText.match(/Score: ([\d.]+)%/);
-        return scoreMatch ? parseFloat(scoreMatch[1]) : 90;
+        const one = text.match(/Score: ([\d.]+)%/);
+        return one ? parseFloat(one[1]) : 90;
       }
 
       function updateSnapshotsDisplay() {
         if (winningSnapshots.length === 0) {
-          winningSnapshotsEl.innerHTML = `
-            <div class="empty-state">
-              🏆 Achieve 90%+ accuracy to capture winning poses!
-            </div>
-          `;
+          winningSnapshotsEl.innerHTML = `<div class="empty-state">🏆 Achieve 90%+ accuracy to capture winning poses!</div>`;
           return;
         }
-
         winningSnapshotsEl.innerHTML = winningSnapshots
           .map(
-            (snapshot) => `
+            (s) => `
           <div class="snapshot-item">
-            <img src="${snapshot.dataURL}" alt="Winning pose ${snapshot.score}%">
-            <div class="snapshot-info">
-              ${snapshot.score}% • ${snapshot.timestamp}
-            </div>
-            <button class="snapshot-remove" onclick="removeSnapshot(${snapshot.id})">×</button>
-          </div>
-        `
+            <img src="${s.dataURL}" alt="Winning pose ${s.score}%">
+            <div class="snapshot-info">${s.score}% • ${s.timestamp}</div>
+            <button class="snapshot-remove" onclick="removeSnapshot(${s.id})">×</button>
+          </div>`
           )
           .join("");
       }
-
       function removeSnapshot(id) {
         winningSnapshots = winningSnapshots.filter((s) => s.id !== id);
         updateSnapshotsDisplay();
       }
-
       function clearAllSnapshots() {
         winningSnapshots = [];
         updateSnapshotsDisplay();
       }
 
-      // Draw an ImageBitmap to canvas preserving aspect, return fit params
       function drawImageFit(ctx, img, canvas) {
         const W = canvas.width,
-          H = canvas.height;
-        const iw = img.width,
+          H = canvas.height,
+          iw = img.width,
           ih = img.height;
         ctx.clearRect(0, 0, W, H);
-        const s = Math.min(W / iw, H / ih);
-        const dw = iw * s,
-          dh = ih * s;
-        const ox = (W - dw) / 2;
-        const oy = (H - dh) / 2;
+        const s = Math.min(W / iw, H / ih),
+          dw = iw * s,
+          dh = ih * s,
+          ox = (W - dw) / 2,
+          oy = (H - dh) / 2;
         ctx.drawImage(img, ox, oy, dw, dh);
         return { sx: s, sy: s, ox, oy };
       }
-
-      // Draw an ImageBitmap to canvas preserving aspect, with horizontal flip, return fit params
       function drawImageFitFlipped(ctx, img, canvas) {
         const W = canvas.width,
-          H = canvas.height;
-        const iw = img.width,
+          H = canvas.height,
+          iw = img.width,
           ih = img.height;
         ctx.clearRect(0, 0, W, H);
-        const s = Math.min(W / iw, H / ih);
-        const dw = iw * s,
-          dh = ih * s;
-        const ox = (W - dw) / 2;
-        const oy = (H - dh) / 2;
-
-        // Apply horizontal flip
+        const s = Math.min(W / iw, H / ih),
+          dw = iw * s,
+          dh = ih * s,
+          ox = (W - dw) / 2,
+          oy = (H - dh) / 2;
         ctx.save();
         ctx.translate(ox + dw, oy);
         ctx.scale(-1, 1);
         ctx.drawImage(img, 0, 0, dw, dh);
         ctx.restore();
-
         return { sx: s, sy: s, ox, oy, flipped: true };
       }
 
-      // MAIN LOOP
       async function loop() {
         requestAnimationFrame(loop);
         if (video.readyState < 2) return;
-
         const W = live.width,
           H = live.height;
 
-        // ---- DISPLAY ----
         lctx.clearRect(0, 0, W, H);
         lctx.save();
         if (mirrorEl.checked) {
@@ -565,17 +505,11 @@
           lctx.scale(-1, 1);
         }
         lctx.drawImage(video, 0, 0, W, H);
-
-        // Draw skeletons based on mode
-        if (multipersonEl.checked) {
+        if (multipersonEl.checked)
           drawMultipleSkeletons(lctx, lastAllKp, lastAllKpScores);
-        } else {
-          drawSkeleton(lctx, lastKp, "lime", 3, lastKpScores);
-        }
-
+        else drawSkeleton(lctx, lastKp, "lime", 3, lastKpScores, true);
         lctx.restore();
 
-        // ---- BACKEND ----
         frameCount++;
         if (frameCount % sendEvery !== 0) return;
 
@@ -585,7 +519,6 @@
           async (blob) => {
             try {
               if (multipersonEl.checked) {
-                // Multi-person mode
                 const data = await postFrame(
                   `${API}/infer_multiperson`,
                   blob,
@@ -594,31 +527,27 @@
                 lastAllKp = data.all_keypoints || null;
                 lastAllScores = data.all_scores || null;
                 lastAllKpScores = data.all_keypoint_scores || null;
-                lastKp = null; // Clear single person data
-                lastKpScores = null; // Clear single person scores
+                lastKp = null;
+                lastKpScores = null;
 
-                // Check for winning scores in multi-person mode
                 if (lastAllScores) {
                   const maxScore = Math.max(
                     ...lastAllScores.filter((s) => s !== null)
                   );
-                  if (maxScore >= 90) {
-                    captureWinningSnapshot();
-                  }
+                  if (maxScore >= 90) captureWinningSnapshot();
                 }
 
                 let msg = "No people detected.";
                 if (data.all_keypoints && data.all_keypoints.length > 0) {
                   if (lastAllScores && lastAllScores.some((s) => s !== null)) {
                     msg = `Tracking ${data.num_people} person(s)\n`;
-                    lastAllScores.forEach((score, index) => {
-                      if (score !== null) {
-                        msg += `Person ${index + 1}: ${score.toFixed(1)}%\n`;
-                      } else {
-                        msg += `Person ${index + 1}: No target set\n`;
-                      }
+                    lastAllScores.forEach((score, i) => {
+                      msg +=
+                        score != null
+                          ? `Person ${i + 1}: ${score.toFixed(1)}%\n`
+                          : `Person ${i + 1}: No target set\n`;
                     });
-                    msg = msg.trim(); // Remove trailing newline
+                    msg = msg.trim();
                   } else {
                     msg = `Tracking ${data.num_people} person(s). Multi-person mode active.`;
                   }
@@ -629,30 +558,19 @@
                     ? "ok"
                     : "muted";
               } else {
-                // Single person mode (original behavior)
                 const data = await postFrame(`${API}/infer`, blob, false);
                 lastKp = data.keypoints || null;
                 lastKpScores = data.keypoint_scores || null;
-                lastAllKp = null; // Clear multi-person data
+                lastAllKp = null;
 
-                // Check for winning score and capture snapshot
-                if (data.score != null && data.score >= 90) {
+                if (data.score != null && data.score >= 90)
                   captureWinningSnapshot();
-                }
-
-                // For testing: capture snapshot every 10 seconds if score > 80
                 if (
                   data.score != null &&
                   data.score >= 80 &&
                   frameCount % 300 === 0
-                ) {
-                  console.log(
-                    "Test snapshot captured at",
-                    data.score.toFixed(1),
-                    "%"
-                  );
+                )
                   captureWinningSnapshot();
-                }
 
                 const msg =
                   data.score == null
@@ -673,7 +591,6 @@
         );
       }
 
-      // -------- UI handlers --------
       openBtn.onclick = async () => {
         try {
           const stream = await navigator.mediaDevices.getUserMedia({
@@ -698,38 +615,26 @@
           async (blob) => {
             try {
               const snap = await createImageBitmap(blob);
-              // Use flipped drawing for webcam snapshots
               const fitParams = drawImageFitFlipped(tctx, snap, target);
-
-              // Choose endpoint based on multi-person mode
               const endpoint = multipersonEl.checked
                 ? `${API}/set_target_multiperson_frame`
                 : `${API}/set_target_from_frame`;
-
               const data = await postFrame(endpoint, blob, false);
-
               if (data.ok) {
                 const { sx, sy, ox, oy } = fitParams;
-
                 if (multipersonEl.checked && data.all_keypoints) {
-                  // Multi-person mode: draw all people with different colors
-                  // Flip X coordinates for webcam snapshots since they're displayed flipped
-                  const scaledKeypoints = data.all_keypoints.map((personKp) =>
-                    personKp.map(([x, y]) => [
-                      ox + (work.width - x) * sx, // Flip X coordinate
-                      oy + y * sy,
-                    ])
+                  const scaled = data.all_keypoints.map((person) =>
+                    person.map((p) =>
+                      p ? [ox + (work.width - p[0]) * sx, oy + p[1] * sy] : null
+                    )
                   );
-                  drawMultipleSkeletons(tctx, scaledKeypoints);
+                  drawMultipleSkeletons(tctx, scaled, null);
                   statusEl.textContent = `Status: Target set with ${data.num_people} person(s)!`;
                 } else if (!multipersonEl.checked && data.keypoints) {
-                  // Single-person mode: draw one skeleton
-                  // Flip X coordinates for webcam snapshots since they're displayed flipped
-                  const sk = data.keypoints.map(([x, y]) => [
-                    ox + (work.width - x) * sx, // Flip X coordinate
-                    oy + y * sy,
-                  ]);
-                  drawSkeleton(tctx, sk, "yellow");
+                  const sk = data.keypoints.map((p) =>
+                    p ? [ox + (work.width - p[0]) * sx, oy + p[1] * sy] : null
+                  );
+                  drawSkeleton(tctx, sk, "yellow", 3, null, true);
                   statusEl.textContent = "Status: Target set!";
                 } else {
                   statusEl.textContent =
@@ -737,7 +642,6 @@
                   statusEl.className = "warn";
                   return;
                 }
-
                 statusEl.className = "ok";
               } else {
                 statusEl.textContent =
@@ -767,35 +671,26 @@
       uploadInp.onchange = async (e) => {
         const file = e.target.files && e.target.files[0];
         if (!file) return;
-
         const img = await createImageBitmap(file);
         lastTargetFit = drawImageFit(tctx, img, target);
-
         try {
-          // Choose endpoint based on multi-person mode
           const endpoint = multipersonEl.checked
             ? `${API}/set_target_multiperson_upload`
             : `${API}/set_target_from_upload`;
-
           const data = await postImage(endpoint, file);
-
           if (data.ok) {
             const { sx, sy, ox, oy } = lastTargetFit;
-
             if (multipersonEl.checked && data.all_keypoints) {
-              // Multi-person mode: draw all people with different colors
-              const scaledKeypoints = data.all_keypoints.map((personKp) =>
-                personKp.map(([x, y]) => [ox + x * sx, oy + y * sy])
+              const scaled = data.all_keypoints.map((person) =>
+                person.map((p) => (p ? [ox + p[0] * sx, oy + p[1] * sy] : null))
               );
-              drawMultipleSkeletons(tctx, scaledKeypoints);
+              drawMultipleSkeletons(tctx, scaled, null);
               statusEl.textContent = `Status: Target set from image with ${data.num_people} person(s)!`;
             } else if (!multipersonEl.checked && data.keypoints) {
-              // Single-person mode: draw one skeleton
-              const sk = data.keypoints.map(([x, y]) => [
-                ox + x * sx,
-                oy + y * sy,
-              ]);
-              drawSkeleton(tctx, sk, "yellow");
+              const sk = data.keypoints.map((p) =>
+                p ? [ox + p[0] * sx, oy + p[1] * sy] : null
+              );
+              drawSkeleton(tctx, sk, "yellow", 3, null, true);
               statusEl.textContent = "Status: Target set from image!";
             } else {
               statusEl.textContent =
@@ -803,7 +698,6 @@
               statusEl.className = "warn";
               return;
             }
-
             statusEl.className = "ok";
           } else {
             statusEl.textContent =
